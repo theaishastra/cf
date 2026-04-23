@@ -9,6 +9,11 @@ document.addEventListener('DOMContentLoaded', () => {
   if (form) form.addEventListener('submit', handleSubmit);
 });
 
+// Track whether a submission is already in progress to prevent
+// duplicate inserts. When true, subsequent submits are ignored
+// until the current submission completes.
+let submissionInProgress = false;
+
 function setupImagePreviews() {
   setupPreview('aadharPhoto', 'aadharPreview', 'aadharPlaceholder', 'aadharUploadBox');
   setupPreview('selfiePhoto',  'selfiePreview',  'selfiePlaceholder',  'selfieUploadBox');
@@ -36,9 +41,16 @@ function setupPreview(inputId, previewId, placeholderId, boxId) {
 
 async function handleSubmit(e) {
   e.preventDefault();
+  // Prevent double submission if the user clicks the submit button multiple times.
+  if (submissionInProgress) {
+    // Ignore additional submits while one is already in progress.
+    return;
+  }
+  submissionInProgress = true;
   const { valid } = validateForm();
   if (!valid) {
     showGlobalError('Please fix the errors above before submitting.');
+    submissionInProgress = false;
     return;
   }
   setLoadingState(true);
@@ -48,20 +60,33 @@ async function handleSubmit(e) {
     const formData = collectFormData();
 
     updateProgress('Compressing images…');
-    const aadharFile    = document.getElementById('aadharPhoto').files[0];
-    const selfieFile    = document.getElementById('selfiePhoto').files[0];
-    const aadharBlob    = await compressAadhar(aadharFile);
-    const selfieBlob    = await compressSelfie(selfieFile);
+    const aadharFile = document.getElementById('aadharPhoto').files[0];
+    const selfieFile = document.getElementById('selfiePhoto').files[0];
+    let aadharBlob = null;
+    let selfieBlob;
+
+    // Compress Aadhaar only if a file was provided. If the user leaves
+    // Aadhaar photo blank, aadharBlob remains null and we skip uploading it.
+    if (aadharFile) {
+      aadharBlob = await compressAadhar(aadharFile);
+    }
+    // Always compress the selfie/passport photo (required)
+    selfieBlob = await compressSelfie(selfieFile);
+    // Convert the selfie blob to a Data URL for embedding into the card preview
     const selfieDataUrl = await blobToDataURL(selfieBlob);
 
     updateProgress('Generating Member ID…');
     const memberId = await fetchMemberId();
 
     updateProgress('Uploading photos…');
-    const [aadharPath, selfiePath] = await Promise.all([
-      uploadAadhar(memberId, aadharBlob),
-      uploadSelfie(memberId, selfieBlob),
-    ]);
+    let aadharPath = null;
+    let selfiePath = null;
+    // Upload the compressed selfie first (always required)
+    selfiePath = await uploadSelfie(memberId, selfieBlob);
+    // Upload Aadhaar only if provided. If not, leave the path as null.
+    if (aadharBlob) {
+      aadharPath = await uploadAadhar(memberId, aadharBlob);
+    }
 
     updateProgress('Building your membership card…');
     const cardEl = buildCardElement({
@@ -108,6 +133,9 @@ async function handleSubmit(e) {
     console.error('Submission error:', err);
     showGlobalError(`Submission failed: ${err.message}. Please try again or contact us at 8328605200.`);
     setLoadingState(false);
+  } finally {
+    // Always reset the submission flag so that the user can try again
+    submissionInProgress = false;
   }
 }
 
